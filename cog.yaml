@@ -19,5 +19,16 @@ build:
     - "huggingface_hub>=0.24"
     - "tqdm"
   # MIDI.py ships vendored in the SkyTNT/midi-model repo (pure Python) — no dep.
+  run:
+    # Bake the model weights into the image at BUILD time so that:
+    #  (1) cold start loads from local disk (seconds, not a multi-minute
+    #      download) — and won't blow Replicate's boot health-check timeout;
+    #  (2) setup() needs no network access.
+    # Only the files we actually load (config + safetensors) — skip the repo's
+    # logs/, onnx/, and the redundant pytorch_model.bin to keep the image lean.
+    - >
+      python -c "from huggingface_hub import snapshot_download;
+      snapshot_download('skytnt/midi-model-tv2o-medium',
+      allow_patterns=['config.json','generation_config.json','model.safetensors'])"
 
 predict: "predict.py:Predictor"
