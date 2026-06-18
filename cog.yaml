@@ -1,0 +1,23 @@
+# Cog config to deploy SkyTNT/midi-model (tv2o-medium, Apache-2.0) as a
+# Replicate model for AI MIDI Studio's "Generate" (text/param → MIDI).
+#
+# This file + predict.py drop INTO a clone of github.com/SkyTNT/midi-model
+# (so `from midi_model import ...` / `import MIDI` resolve). See README.md.
+#
+# Inference only: we drop the repo's gradio / lightning / pyfluidsynth deps
+# (UI, training, audio-render) to keep the image small and cold-start short.
+build:
+  gpu: true
+  cuda: "12.1"
+  python_version: "3.11"
+  python_packages:
+    - "torch==2.4.0"
+    - "numpy<2"
+    - "safetensors>=0.4.3"
+    - "transformers>=4.36"
+    - "peft>=0.13.0"
+    - "huggingface_hub>=0.24"
+    - "tqdm"
+  # MIDI.py ships vendored in the SkyTNT/midi-model repo (pure Python) — no dep.
+
+predict: "predict.py:Predictor"

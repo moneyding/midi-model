@@ -1,0 +1,52 @@
+# GitHub Action: build & push the Cog image to Replicate.
+#
+# INSTALL: copy this file into your fork at  .github/workflows/push.yml
+# (NOT into my-freesong — it belongs in the SkyTNT/midi-model fork).
+#
+# WHY GITHUB AND NOT THE VPS: `cog push` builds a Docker image. The GitHub
+# runner has Docker preinstalled and does NOT need a GPU to build (GPU is
+# only used at inference time, on Replicate). The production VPS has neither
+# Docker nor GPU and should keep it that way.
+#
+# PREREQUISITES (one-time, done by the repo owner):
+#   1. Repo secret REPLICATE_API_TOKEN  (Settings → Secrets → Actions)
+#   2. An empty model created on Replicate: moneyding/midi-model-skytnt
+#      (Replicate → Create model → CPU/GPU hardware = pick T4 or A40)
+#
+# After setup: every push to `main` (or a manual "Run workflow") builds and
+# pushes a new version. First build will be slow (downloads CUDA + torch).
+
+name: Push to Replicate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  cog-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        # CUDA + torch images are large; the default runner can run out of disk.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: Install Cog
+        run: |
+          sudo curl -o /usr/local/bin/cog -L \
+            "https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)"
+          sudo chmod +x /usr/local/bin/cog
+          cog --version
+
+      - name: Push to Replicate
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        run: |
+          echo "$REPLICATE_API_TOKEN" | cog login --token-stdin
+          # NOTE: update the destination if you used a different model name.
+          cog push r8.im/moneyding/midi-model-skytnt
