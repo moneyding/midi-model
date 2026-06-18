@@ -26,14 +26,9 @@ build:
     #  (2) setup() needs no network access.
     # Only the files we actually load (config + safetensors) — skip the repo's
     # logs/, onnx/, and the redundant pytorch_model.bin to keep the image lean.
-    # Retry loop: GitHub runners share IPs that HuggingFace often rate-limits
-    # (HTTP 429). Transient — a few retries with backoff clears it.
-    - |
-      ok=0
-      for i in 1 2 3 4 5 6 7 8; do
-        if python -c "from huggingface_hub import snapshot_download; snapshot_download('skytnt/midi-model-tv2o-medium', allow_patterns=['config.json','generation_config.json','model.safetensors'])"; then ok=1; break; fi
-        echo "HF download attempt $i failed; sleeping 30s before retry..."; sleep 30
-      done
-      [ "$ok" = "1" ] || { echo "ERROR: HF weight download failed after 8 retries"; exit 1; }
+    # Retry loop on a SINGLE line (cog forbids multi-line run commands):
+    # GitHub runners share IPs that HuggingFace often rate-limits (HTTP 429).
+    # Transient — retry up to 8x with 30s backoff until the download succeeds.
+    - "i=0; until python -c \"from huggingface_hub import snapshot_download; snapshot_download('skytnt/midi-model-tv2o-medium', allow_patterns=['config.json','generation_config.json','model.safetensors'])\"; do i=$((i+1)); [ $i -ge 8 ] && { echo 'HF download failed after 8 retries'; exit 1; }; echo \"HF 429/err, retry $i in 30s...\"; sleep 30; done"
 
 predict: "predict.py:Predictor"
