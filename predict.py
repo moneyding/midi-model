@@ -28,6 +28,19 @@ HF_MODEL_ID = "skytnt/midi-model-tv2o-medium"
 MODEL_CONFIG = "tv2o-medium"
 
 
+def _arg(v):
+    """Return a usable value for a predict() argument.
+
+    For inputs the caller omits, this Cog version hands predict() the raw
+    Input() descriptor (a pydantic FieldInfo) instead of the declared default,
+    so every downstream int()/hash/compare on it blows up. Unwrap any such
+    FieldInfo to its `.default` (recursively, in case default is also wrapped).
+    """
+    while type(v).__name__ == "FieldInfo":
+        v = getattr(v, "default", None)
+    return v
+
+
 class Predictor(BasePredictor):
     def setup(self):
         """Load tv2o-medium weights (baked into the image) into the GPU once."""
@@ -97,6 +110,20 @@ class Predictor(BasePredictor):
     ) -> Path:
         t0 = time.time()
         try:
+            # Unwrap any args Cog left as raw Input() FieldInfo (see _arg()).
+            instruments = _arg(instruments)
+            add_drums = _arg(add_drums)
+            bpm = _arg(bpm)
+            time_sig_numerator = _arg(time_sig_numerator)
+            time_sig_denominator = _arg(time_sig_denominator)
+            key_sig_sharps_flats = _arg(key_sig_sharps_flats)
+            key_sig_minor = _arg(key_sig_minor)
+            max_len = _arg(max_len)
+            temperature = _arg(temperature)
+            top_p = _arg(top_p)
+            top_k = _arg(top_k)
+            seed = _arg(seed)
+
             tokenizer = self.tokenizer
 
             gen = None
