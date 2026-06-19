@@ -12,6 +12,7 @@
 # structured controls (instruments / bpm / time_signature / key_signature).
 
 import time
+import traceback
 from typing import Optional
 
 import numpy as np
@@ -92,71 +93,79 @@ class Predictor(BasePredictor):
         seed: int = Input(description="Random seed. -1 = random.", default=-1),
     ) -> Path:
         t0 = time.time()
-        tokenizer = self.tokenizer
+        try:
+            tokenizer = self.tokenizer
 
-        gen = None
-        if seed is not None and seed >= 0:
-            gen = torch.Generator(device=self.device).manual_seed(int(seed))
+            gen = None
+            if seed is not None and seed >= 0:
+                gen = torch.Generator(device=self.device).manual_seed(int(seed))
 
-        # ---- Build the seed token sequence (mirrors app.py run(), tab==0) ----
-        mid = [[tokenizer.bos_id] + [tokenizer.pad_id] * (tokenizer.max_token_seq - 1)]
+            # ---- Build the seed token sequence (mirrors app.py run(), tab==0) ----
+            mid = [[tokenizer.bos_id] + [tokenizer.pad_id] * (tokenizer.max_token_seq - 1)]
 
-        if getattr(tokenizer, "version", "v2") == "v2":
-            if time_sig_numerator and time_sig_denominator:
-                dd = {2: 1, 4: 2, 8: 3, 16: 4}[time_sig_denominator]
+            if getattr(tokenizer, "version", "v2") == "v2":
+                if time_sig_numerator and time_sig_denominator:
+                    dd = {2: 1, 4: 2, 8: 3, 16: 4}[time_sig_denominator]
+                    mid.append(
+                        tokenizer.event2tokens(
+                            ["time_signature", 0, 0, 0, time_sig_numerator - 1, dd - 1]
+                        )
+                    )
                 mid.append(
                     tokenizer.event2tokens(
-                        ["time_signature", 0, 0, 0, time_sig_numerator - 1, dd - 1]
+                        ["key_signature", 0, 0, 0, key_sig_sharps_flats + 7, int(key_sig_minor)]
                     )
                 )
-            mid.append(
-                tokenizer.event2tokens(
-                    ["key_signature", 0, 0, 0, key_sig_sharps_flats + 7, int(key_sig_minor)]
-                )
+
+            if bpm and bpm > 0:
+                mid.append(tokenizer.event2tokens(["set_tempo", 0, 0, 0, bpm]))
+
+            patches = {}
+            ch = 0
+            for tok in str(instruments).split(","):
+                tok = tok.strip()
+                if tok == "":
+                    continue
+                program = max(0, min(127, int(tok)))
+                patches[ch] = program
+                ch = (ch + 1) if ch != 8 else 10  # skip channel 9 (drums), per app.py
+            if add_drums:
+                patches[9] = 0  # standard kit
+
+            for idx, (c, p) in enumerate(patches.items()):
+                mid.append(tokenizer.event2tokens(["patch_change", 0, 0, idx + 1, c, p]))
+
+            # event2tokens returns [] for out-of-range params; drop those so the
+            # seed stays a rectangular (N, max_token_seq) array for np.asarray.
+            seed_seq = [ev for ev in mid if ev]
+            mid_arr = np.asarray([seed_seq], dtype=np.int64)  # batch_size = 1
+            print(f"[predict] seed events={len(seed_seq)} max_len={max_len}", flush=True)
+
+            # ---- Generate ----
+            # MIDIModel.generate (a transformers PreTrainedModel subclass) is NOT
+            # the streaming app.py generate(): it runs to completion and RETURNS
+            # the full token array of shape (batch, total_len, max_token_seq).
+            # It also does not accept the app.py disable_* flags.
+            output = self.model.generate(
+                mid_arr, batch_size=1, max_len=max_len, temp=temperature,
+                top_p=top_p, top_k=top_k, generator=gen,
             )
+            out_arr = np.asarray(output)
+            full_seq = out_arr[0].tolist()  # seed + generated token-lists
+            print(f"[predict] generated total events={len(full_seq)}", flush=True)
 
-        if bpm and bpm > 0:
-            mid.append(tokenizer.event2tokens(["set_tempo", 0, 0, 0, bpm]))
+            # ---- Detokenize → standard MIDI bytes ----
+            score = tokenizer.detokenize(full_seq)
+            midi_bytes = MIDI.score2midi(score)
 
-        patches = {}
-        ch = 0
-        for tok in str(instruments).split(","):
-            tok = tok.strip()
-            if tok == "":
-                continue
-            program = max(0, min(127, int(tok)))
-            patches[ch] = program
-            ch = (ch + 1) if ch != 8 else 10  # skip channel 9 (drums), per app.py
-        if add_drums:
-            patches[9] = 0  # standard kit
-
-        for idx, (c, p) in enumerate(patches.items()):
-            mid.append(tokenizer.event2tokens(["patch_change", 0, 0, idx + 1, c, p]))
-
-        seed_seq = mid
-        mid_arr = np.asarray([seed_seq], dtype=np.int64)  # batch_size = 1
-        print(f"[predict] seed events={len(seed_seq)} max_len={max_len}", flush=True)
-
-        # ---- Drain the autoregressive generator (mirrors app.py loop) ----
-        mid_seq = [list(seed_seq)]
-        midi_generator = self.model.generate(
-            mid_arr, batch_size=1, max_len=max_len, temp=temperature,
-            top_p=top_p, top_k=top_k, disable_patch_change=False,
-            disable_control_change=False, disable_channels=None, generator=gen,
-        )
-        steps = 0
-        for token_seqs in midi_generator:
-            token_seqs = token_seqs.tolist()
-            mid_seq[0].append(token_seqs[0])
-            steps += 1
-        print(f"[predict] generated {steps} steps, total events={len(mid_seq[0])}", flush=True)
-
-        # ---- Detokenize → standard MIDI bytes ----
-        score = tokenizer.detokenize(mid_seq[0])
-        midi_bytes = MIDI.score2midi(score)
-
-        out_path = "/tmp/output.mid"
-        with open(out_path, "wb") as f:
-            f.write(midi_bytes)
-        print(f"[predict] wrote {len(midi_bytes)} bytes in {time.time() - t0:.1f}s", flush=True)
-        return Path(out_path)
+            out_path = "/tmp/output.mid"
+            with open(out_path, "wb") as f:
+                f.write(midi_bytes)
+            print(f"[predict] wrote {len(midi_bytes)} bytes in {time.time() - t0:.1f}s", flush=True)
+            return Path(out_path)
+        except Exception:
+            tb = traceback.format_exc()
+            print("[predict] FAILED:\n" + tb, flush=True)
+            # Surface the full traceback in Replicate's `error` field so the exact
+            # failing line is visible even when container logs are not captured.
+            raise RuntimeError("predict failed:\n" + tb)
