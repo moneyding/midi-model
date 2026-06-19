@@ -73,8 +73,11 @@ class Predictor(BasePredictor):
             default=4, ge=0, le=16,
         ),
         time_sig_denominator: int = Input(
+            # NOTE: do NOT use choices=[...] here. Under this Cog/pydantic
+            # version it makes the delivered value an unhashable list, which
+            # blows up the dict lookup below. Plain int + in-code validation.
             description="Time signature denominator: 2, 4, 8 or 16. 0 = unset.",
-            default=4, choices=[0, 2, 4, 8, 16],
+            default=4, ge=0, le=16,
         ),
         key_sig_sharps_flats: int = Input(
             description="Key signature: sharps (+) / flats (-), -7..7.",
@@ -103,12 +106,15 @@ class Predictor(BasePredictor):
             # ---- Build the seed token sequence (mirrors app.py run(), tab==0) ----
             mid = [[tokenizer.bos_id] + [tokenizer.pad_id] * (tokenizer.max_token_seq - 1)]
 
+            tsn = int(time_sig_numerator)
+            tsd = int(time_sig_denominator)
             if getattr(tokenizer, "version", "v2") == "v2":
-                if time_sig_numerator and time_sig_denominator:
-                    dd = {2: 1, 4: 2, 8: 3, 16: 4}[time_sig_denominator]
+                dd_map = {2: 1, 4: 2, 8: 3, 16: 4}
+                if tsn and tsd in dd_map:
+                    dd = dd_map[tsd]
                     mid.append(
                         tokenizer.event2tokens(
-                            ["time_signature", 0, 0, 0, time_sig_numerator - 1, dd - 1]
+                            ["time_signature", 0, 0, 0, tsn - 1, dd - 1]
                         )
                     )
                 mid.append(
